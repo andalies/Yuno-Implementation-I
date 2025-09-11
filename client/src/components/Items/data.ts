@@ -1,28 +1,28 @@
 import { Product } from './types';
-import ocaImg from '../../assets/images/oca.jpeg';
-import toyImg from '../../assets/images/toy.jpeg';
-import bedImg from '../../assets/images/bed.jpeg';
+import vestido1Img from '../../assets/images/dress1.jpg';
+import vestido2Img from '../../assets/images/dress2.jpg';
+import vestido3Img from '../../assets/images/dress3.jpg';
 
 export const products: Product[] = [
   {
     id: 1,
-    title: "Oca quentinha",
-    description: "Oca bem quentinha para ele dormir",
-    image: ocaImg,
+    title: "Vestido I",
+    description: "Lindo vestido",
+    image: vestido1Img,
     price: "R$ 209,99"
   },
   {
     id: 2,
-    title: "Brinquedo bonitinho",
-    description: "Para brincar com seu gatinho",
-    image: toyImg,
+    title: "Vestido II",
+    description: "Vestido branco",
+    image: vestido2Img,
     price: "R$ 89,99"
   },
   {
     id: 3,
-    title: "Cama de gato",
-    description: "Cama fofinha para seu gato",
-    image: bedImg,
+    title: "Vestido III",
+    description: "Vestido preto e branco",
+    image: vestido3Img,
     price: "R$ 99,99"
   },
 ];

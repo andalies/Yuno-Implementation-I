@@ -51,3 +51,11 @@ export function createPayment(body: CreatePaymentReq): Promise<CreatePaymentRes>
     body: JSON.stringify(body),
   });
 }
+
+export interface CreateCheckoutSessionReq {
+  amount: number;          // cents (your current code)
+  currency?: string;
+  countryCode?: string;
+  orderId: string;
+  description?: string;    // NEW
+}
