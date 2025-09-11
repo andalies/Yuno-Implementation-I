@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { RootReducer } from "../../store";
 import { removeItem, clearCart } from "../../store/reducers/Cart";
@@ -8,8 +8,10 @@ import {
   QuantityInput,
   CheckoutFooter,
 } from "./styles";
+
 import type { YunoInstance } from "@yuno-payments/sdk-web-types";
 import { useYuno } from "../../lib/yuno";
+import { createCheckoutSession, createPayment } from "../../lib/api";
 
 const Checkout: React.FC = () => {
   const { items } = useSelector((s: RootReducer) => s.cart);
@@ -18,65 +20,52 @@ const Checkout: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
 
+  const total = useMemo(
+    () => items.reduce((sum, item) => sum + item.preco * item.quantidade, 0),
+    [items]
+  );
+
   const updateQuantity = (_id: number, _quantity: number) => {};
   const removeFromCart = (id: number) => dispatch(removeItem(id));
   const clear = () => dispatch(clearCart());
-  const total = items.reduce((sum, item) => sum + item.preco * item.quantidade, 0);
 
   const handlePay = useCallback(async () => {
-    if (items.length === 0 || loading) return;
+    if (!items.length || loading) return;
     setLoading(true);
+
     try {
-      // 1) Cria a sessão no backend (ele fala com a Yuno usando SECRET)
-      const r = await fetch("/checkout/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: Math.round(total * 100),
-          currency: "BRL",
-          countryCode: "BR",
-          orderId: `order_${Date.now()}`,
-        }),
+      // 1) Create checkout session on backend (amount MUST be decimal, not cents)
+      const { checkoutSession, id } = await createCheckoutSession({
+        amount: Number(total.toFixed(2)), // decimal
+        currency: "BRL",
+        country: "BR",
+        orderId: `order_${Date.now()}`,
+        description: "Cart purchase",
       });
 
-      const txt = await r.text(); // tolera HTML de erro
-      if (!r.ok) throw new Error(`create session falhou: ${r.status} ${txt}`);
+      const session = checkoutSession || id;
+      if (!session) throw new Error("Backend did not return checkoutSession.");
 
-      let data: any;
-      try {
-        data = JSON.parse(txt || "{}");
-      } catch {
-        throw new Error(`Resposta inválida do backend: ${txt}`);
-      }
-
-      const checkoutSession = data.checkoutSession || data.id;
-      if (!checkoutSession) throw new Error("Backend não retornou checkoutSession.");
-
-      // 2) Garante o SDK, inicia e monta o checkout (fluxo v1.1)
+      // 2) Load SDK and render embedded
       const yuno: YunoInstance = await ensureYuno();
 
       await yuno.startCheckout({
-        checkoutSession,
-        elementSelector: "#yuno-container",
+        checkoutSession: session,
+        elementSelector: "#yuno-container", // embedded target
         countryCode: "BR",
         language: "pt",
-        renderMode: { type: "modal" },
+        renderMode: { type: "element" },
 
         async yunoCreatePayment(oneTimeToken: string) {
-          // 3) Backend cria o pagamento com o oneTimeToken
-          const pr = await fetch("/api/create-payment", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oneTimeToken, checkoutSession }),
-          });
-          const ptxt = await pr.text();
-          if (!pr.ok) throw new Error(`create-payment falhou: ${pr.status} ${ptxt}`);
+          // 3) Create payment on your backend using oneTimeToken
+          const pr = await createPayment({ oneTimeToken, checkoutSession: session });
 
-          // 4) Completa fluxos assíncronos (Pix, wallets, BNPL…)
+          // 4) Required for async flows (PIX, wallets, BNPL)
           await (yuno as any).continuePayment?.({ showPaymentStatus: true });
 
+          // If your flow should only clear on success, check pr.status === "approved" here
           dispatch(clearCart());
-          alert("Pagamento realizado com sucesso!");
+          alert("Pagamento criado! Verifique o status na tela.");
         },
 
         yunoPaymentResult(result: unknown) {
@@ -84,19 +73,18 @@ const Checkout: React.FC = () => {
           (yuno as any).hideLoader?.();
         },
 
-        yunoError(error: unknown, detail: unknown) {
-          console.error("Yuno error:", error, detail);
+        yunoError(err: unknown, detail: unknown) {
+          console.error("Yuno error:", err, detail);
           (yuno as any).hideLoader?.();
           alert("Ocorreu um erro no pagamento. Tente novamente.");
         },
       });
 
-      await yuno.mountCheckout(); // obrigatório após startCheckout
-      // opcional: disparar fluxo manual
-      // await yuno.startPayment();
-    } catch (e: any) {
-      console.error("handlePay error:", e);
-      alert(e?.message ?? "Não foi possível iniciar o checkout.");
+      // v1.1+: required after startCheckout for element mode
+      await (yuno as any).mountCheckout?.();
+    } catch (err: any) {
+      console.error("handlePay error:", err);
+      alert(err?.message ?? "Não foi possível iniciar o checkout.");
     } finally {
       setLoading(false);
     }
@@ -105,6 +93,7 @@ const Checkout: React.FC = () => {
   return (
     <CheckoutContainer>
       <h1>Checkout</h1>
+
       {items.length === 0 ? (
         <p>Seu carrinho está vazio</p>
       ) : (
@@ -126,13 +115,16 @@ const Checkout: React.FC = () => {
               </div>
             </ItemCard>
           ))}
+
           <CheckoutFooter>
             <h3>Total: R$ {total.toFixed(2)}</h3>
+
             <button onClick={handlePay} disabled={loading}>
               {loading ? "Abrindo checkout..." : "Pagar com Yuno"}
             </button>
-            {/* usado se renderMode: "element" */}
-            <div id="yuno-container" />
+
+            {/* Embedded checkout renders here */}
+            <div id="yuno-container" style={{ minHeight: 640, width: "100%" }} />
           </CheckoutFooter>
         </>
       )}

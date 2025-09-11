@@ -1,39 +1,62 @@
-import React, { createContext, useCallback, useContext, useRef } from "react";
+// client/src/lib/yuno.ts
+import { useRef, useCallback } from "react";
 import type { YunoInstance } from "@yuno-payments/sdk-web-types";
+import { loadScript } from "@yuno-payments/sdk-web";
 
-type Ctx = {
-  ensureYuno: () => Promise<YunoInstance>;
-};
+export function useYuno() {
+  const ref = useRef<YunoInstance | null>(null);
 
-const YunoCtx = createContext<Ctx | null>(null);
+  const ensureYuno = useCallback(async (): Promise<YunoInstance> => {
+    if (ref.current) return ref.current;
 
-export const YunoProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const yunoRef = useRef<YunoInstance | null>(null);
+    const publicKey =
+      import.meta.env.VITE_YUNO_PUBLIC_KEY ||
+      import.meta.env.VITE_YUNO_API_KEY;
+    if (!publicKey) {
+      throw new Error("VITE_YUNO_PUBLIC_KEY ausente no cliente.");
+    }
 
-  const ensureYuno = useCallback(async () => {
-    if (yunoRef.current) return yunoRef.current;
+    let sdk: any | undefined;
 
-    const publicKey = import.meta.env.VITE_YUNO_PUBLIC_KEY || import.meta.env.VITE_YUNO_API_KEY;
-    if (!publicKey) throw new Error("Chave pública da Yuno ausente (VITE_YUNO_PUBLIC_KEY).");
+    // 1) Normal path
+    try {
+      sdk = await loadScript();
+    } catch (e) {
+      console.error("Yuno loadScript() falhou:", e);
+    }
 
-    // robust dynamic import that works across builds
-    const mod: any = await import("@yuno-payments/sdk-web");
-    const loadScript = mod.loadScript ?? mod.default;
-    if (typeof loadScript !== "function") throw new Error("Falha ao localizar loadScript no SDK.");
+    // 2) Fallback: window.Yuno (se algum script externo expôs global)
+    if (!sdk?.initialize) {
+      const g: any = (window as any).Yuno;
+      if (g?.initialize) {
+        ref.current = (await g.initialize(publicKey)) as YunoInstance;
+        return ref.current;
+      }
+    }
 
-    const sdk: any = await loadScript();
-    if (!sdk?.initialize) throw new Error("SDK inválido retornado por loadScript.");
+    // 3) Fallback: dynamic import and constructor
+    if (!sdk?.initialize) {
+      try {
+        const mod: any = await import("@yuno-payments/sdk-web");
+        if (typeof mod?.Yuno === "function") {
+          // algumas versões expõem classe Yuno
+          ref.current = new mod.Yuno(publicKey) as YunoInstance;
+          return ref.current;
+        }
+      } catch (e) {
+        console.error("import('@yuno-payments/sdk-web') falhou:", e);
+      }
+    }
 
-    const yuno = await sdk.initialize(publicKey); // initialize is async (v1.1)
-    yunoRef.current = yuno as YunoInstance;
-    return yunoRef.current!;
+    if (!sdk?.initialize) {
+      throw new Error(
+        "Yuno SDK não carregou. Verifique ad-block/Brave, rede e a versão de @yuno-payments/sdk-web."
+      );
+    }
+
+    ref.current = (await sdk.initialize(publicKey)) as YunoInstance;
+    return ref.current;
   }, []);
 
-  return <YunoCtx.Provider value={{ ensureYuno }}>{children}</YunoCtx.Provider>;
-};
-
-export const useYuno = () => {
-  const ctx = useContext(YunoCtx);
-  if (!ctx) throw new Error("useYuno must be used inside <YunoProvider>");
-  return ctx;
-};
+  return { ensureYuno };
+}

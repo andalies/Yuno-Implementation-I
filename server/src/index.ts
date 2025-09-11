@@ -1,45 +1,99 @@
+// server/src/index.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import axios from "axios";
+import crypto from "node:crypto";
 
 const app = express();
-app.use(cors({ origin: ["http://localhost:3000"] }));
+app.use(cors({ origin: ["http://localhost:3000", "http://127.0.0.1:3000"] }));
 app.use(express.json());
 
-// Request logger so we SEE every hit and path:
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
+// ---- ONE set of envs (no duplicates) ----
+const BASE = (process.env.YUNO_BASE_URL ?? "https://api-sandbox.y.uno").replace(/\/+$/, "");
+// accept either naming you used
+const PUBLIC = (process.env.YUNO_PUBLIC_KEY ?? process.env.YUNO_PUBLIC_API_KEY ?? "").trim();
+const SECRET = (process.env.YUNO_SECRET_KEY ?? process.env.YUNO_PRIVATE_SECRET_KEY ?? "").trim();
+const ACCOUNT = (process.env.ACCOUNT_CODE ?? process.env.YUNO_ACCOUNT_ID ?? "").trim();
 
 app.get("/", (_req, res) => res.send("API ok"));
 
-// ***** THIS is the route your client and curl must hit *****
-app.post("/checkout/sessions", (req, res) => {
-  console.log("POST /checkout/sessions BODY:", req.body);
-  const { amount, orderId } = req.body || {};
-  if (!amount || !orderId) {
-    return res.status(400).json({ error: "missing_params" });
+// Create checkout session (Yuno v1)
+app.post("/checkout/sessions", async (req, res) => {
+  try {
+    const {
+      amount,                  // you can send 99.99 OR cents; see conversion below
+      currency = "BRL",
+      country = "BR",
+      orderId,
+      description,
+      metadata,
+    } = req.body ?? {};
+
+    if (amount == null || !orderId) {
+      return res.status(400).json({ error: "missing_params" });
+    }
+    if (!PUBLIC || !SECRET || !ACCOUNT) {
+      return res
+        .status(500)
+        .json({ error: "server_misconfigured", details: "Missing PUBLIC/SECRET/ACCOUNT" });
+    }
+
+    const headers = {
+      "Content-Type": "application/json",
+      "public-api-key": PUBLIC,
+      "private-secret-key": SECRET,
+      "X-Idempotency-Key": crypto.randomUUID(),
+    };
+
+    // If your client sends cents (e.g., 9999), convert to decimal BRL; adjust to your case.
+    const numericAmount = Number(amount);
+    const value = numericAmount > 1000 ? numericAmount / 100 : numericAmount;
+
+    const payload = {
+      account_id: ACCOUNT,                      // REQUIRED by Yuno
+      merchant_order_id: String(orderId),
+      country,
+      amount: { value, currency },
+      payment_description: description,
+      metadata,                                 // optional
+    };
+
+    const r = await axios.post(`${BASE}/v1/checkout/sessions`, payload, {
+      headers,
+      validateStatus: () => true,
+    });
+
+    if (r.status < 200 || r.status >= 300) {
+      return res.status(r.status).json({
+        error: "yuno_create_session_failed",
+        details: r.data,
+      });
+    }
+
+    const sess =
+      r.data?.checkout_session ?? r.data?.checkoutSession ?? r.data?.id;
+    if (!sess) return res.status(500).json({ error: "invalid_yuno_response", raw: r.data });
+
+    return res.json({ checkoutSession: sess });
+  } catch (err: any) {
+    console.error("create session error:", err?.response?.data || err?.message);
+    return res.status(500).json({ error: "server_error", details: err?.message });
   }
-  // mock response to unblock the flow
-  return res.json({ checkoutSession: "00000000-0000-4000-8000-000000000001" });
 });
 
-// used by the SDK callback to create a payment
-app.post("/api/create-payment", (req, res) => {
-  console.log("POST /api/create-payment BODY:", req.body);
-  const { oneTimeToken, checkoutSession } = req.body || {};
-  if (!oneTimeToken || !checkoutSession) {
+// (Keep this simple for now; you can swap to real Yuno payment call later)
+app.post("/api/create-payment", async (req, res) => {
+  const { oneTimeToken, checkoutSession } = req.body ?? {};
+  if (!oneTimeToken || !checkoutSession)
     return res.status(400).json({ error: "missing_params" });
-  }
+
+  // mock success to unblock your front-end flow
   return res.json({ status: "approved", id: "pay_mock_123" });
 });
 
-// JSON 404 (avoid the '*' pattern)
-app.use((req, res) => {
-  console.warn("404 on backend:", req.method, req.path);
-  res.status(404).json({ error: "not_found", path: req.path });
-});
+// 404
+app.use((_req, res) => res.status(404).json({ error: "not_found" }));
 
 const port = Number(process.env.PORT) || 4000;
 app.listen(port, () => console.log(`Backend on http://localhost:${port}`));
